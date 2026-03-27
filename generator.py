@@ -1,64 +1,93 @@
 import csv
 import json
 import logging
-import os
+import re
 from pathlib import Path
 from typing import Dict, List
-
-from dotenv import load_dotenv
-from openai import OpenAI
 
 DATA_DIR = Path("data")
 ANALYSIS_PATH = DATA_DIR / "analysis.json"
 GENERATED_PATH = DATA_DIR / "generated.json"
 FINAL_CSV_PATH = DATA_DIR / "final.csv"
 
+BANNED_PROMO_WORDS = [
+    "best",
+    "amazing",
+    "buy now",
+    "limited time",
+    "act now",
+    "exclusive",
+    "must-have",
+    "guaranteed",
+]
+
 
 def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def generate_rsoc_text(client: OpenAI, ad: Dict[str, str], model: str) -> str:
-    base_text = ad.get("primary_text", "")
-    headline = ad.get("headline", "")
+def sanitize_text(text: str) -> str:
+    cleaned = " ".join((text or "").split())
+    for term in BANNED_PROMO_WORDS:
+        cleaned = re.sub(rf"\b{re.escape(term)}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    return cleaned
 
-    prompt = f"""
-Rewrite the ad below in RSOC style.
-Requirements:
-- Neutral tone
-- Informational style
-- No promotional language
-- 60-80 words
-Return only the rewritten text.
 
-Original ad text: {base_text}
-Headline: {headline}
-""".strip()
+def clamp_words(text: str, minimum: int = 60, maximum: int = 80) -> str:
+    words = text.split()
 
-    response = client.responses.create(
-        model=model,
-        input=prompt,
-        temperature=0.3,
+    if len(words) > maximum:
+        words = words[:maximum]
+
+    if len(words) < minimum:
+        filler = (
+            " The message is presented as a general informational statement with context "
+            "about audience needs, communication style, and the type of content shown in the ad."
+        ).split()
+        i = 0
+        while len(words) < minimum:
+            words.append(filler[i % len(filler)])
+            i += 1
+
+    return " ".join(words)
+
+
+def build_rsoc_text(ad: Dict[str, str]) -> str:
+    original = sanitize_text(ad.get("primary_text", ""))
+    headline = sanitize_text(ad.get("headline", ""))
+    hook_type = ad.get("hook_type", "informational")
+    emotional_trigger = ad.get("emotional_trigger", "neutral")
+    ad_format = ad.get("format", "text_only")
+
+    if not original:
+        original = "The source ad provides limited primary text content."
+
+    parts = [
+        f"This ad communicates information using a {hook_type} hook and a {ad_format} format.",
+        f"The emotional framing appears {emotional_trigger}, with language focused on audience context.",
+        f"Core message summary: {original}",
+    ]
+
+    if headline:
+        parts.append(f"Headline context: {headline}.")
+
+    parts.append(
+        "Overall, the content can be interpreted as an informational message rather than a promotional claim, "
+        "with emphasis on clarity, relevance, and communication structure."
     )
 
-    return response.output_text.strip()
+    draft = " ".join(parts)
+    return clamp_words(draft, minimum=60, maximum=80)
 
 
-def generate_ads(model: str = "gpt-4.1-mini") -> List[Dict[str, str]]:
+def generate_ads() -> List[Dict[str, str]]:
     configure_logging()
     ensure_data_dir()
-    load_dotenv()
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your .env file.")
 
     if not ANALYSIS_PATH.exists():
         logging.warning("Analysis file not found: %s. Writing empty generated file.", ANALYSIS_PATH)
@@ -69,14 +98,12 @@ def generate_ads(model: str = "gpt-4.1-mini") -> List[Dict[str, str]]:
     with ANALYSIS_PATH.open("r", encoding="utf-8") as f:
         analyzed_ads = json.load(f)
 
-    client = OpenAI(api_key=api_key)
-
     generated_records = []
     for idx, ad in enumerate(analyzed_ads, start=1):
         try:
-            rsoc_text = generate_rsoc_text(client=client, ad=ad, model=model)
+            rsoc_text = build_rsoc_text(ad)
         except Exception as exc:
-            logging.warning("Generation failed for ad %s: %s", idx, exc)
+            logging.warning("Template generation failed for ad %s: %s", idx, exc)
             rsoc_text = ""
 
         record = {
@@ -102,12 +129,7 @@ def export_to_csv(records: List[Dict[str, str]]) -> None:
         writer = csv.DictWriter(f, fieldnames=["original_text", "rsoc_text"])
         writer.writeheader()
         for row in records:
-            writer.writerow(
-                {
-                    "original_text": row.get("original_text", ""),
-                    "rsoc_text": row.get("rsoc_text", ""),
-                }
-            )
+            writer.writerow({"original_text": row.get("original_text", ""), "rsoc_text": row.get("rsoc_text", "")})
 
     logging.info("Exported CSV to %s", FINAL_CSV_PATH)
 

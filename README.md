@@ -1,12 +1,22 @@
-# Facebook Ad Library Pipeline (Python)
+# Facebook Ad Library Pipeline (Free Local-Only Version)
 
-A production-like end-to-end pipeline that:
+This project is a **fully free local-only** Python pipeline for collecting and processing Meta/Facebook Ad Library data.
 
-1. Scrapes ads from the Meta/Facebook Ad Library using Playwright
-2. Cleans and normalizes ad data
-3. Analyzes each ad with OpenAI (hook type, emotional trigger, format)
-4. Rewrites each ad into RSOC-style text
-5. Exports final generated content to CSV
+✅ No OpenAI API usage  
+✅ No API key required  
+✅ Entire analysis and RSOC generation runs locally with rule/template logic
+
+---
+
+## What the Pipeline Does
+
+The workflow runs in this exact order:
+
+1. **Scrape** ads from Meta Ad Library (`scraper.py`) → `data/raw.json`
+2. **Clean** and normalize records (`cleaner.py`) → `data/clean.json`
+3. **Analyze** with local heuristic rules (`analyzer.py`) → `data/analysis.json`
+4. **Generate** RSOC-style rewrites via local templates (`generator.py`) → `data/generated.json`
+5. **Export** CSV (`generator.py`) → `data/final.csv`
 
 ---
 
@@ -33,141 +43,133 @@ A production-like end-to-end pipeline that:
 
 ---
 
+## Local Analysis Rules (No AI API)
+
+`analyzer.py` infers fields using keyword-based heuristics from `primary_text` + `headline`:
+
+### `hook_type` examples
+- **curiosity**: words like `secret`, `revealed`, `mistake`, `warning`
+- **value**: words like `save`, `discount`, `cheap`
+- **transformation**: phrases like `before/after`, `transform`
+- fallback: `informational`
+
+### `emotional_trigger` examples
+- **fear**: `fear`, `risk`, `danger`, `urgent`
+- **loneliness**: `lonely`, `alone`, `single`
+- **anxiety**: `anxious`, `stress`, `worried`
+- fallback: `neutral`
+
+### `format` examples
+- inferred from combinations of image/headline presence and copy length
+- e.g. `image_headline_longcopy`, `image_text`, `text_only`, etc.
+
+---
+
+## Local RSOC Generation (No AI API)
+
+`generator.py` builds a neutral RSOC-style paragraph using:
+- original ad text
+- rule-based analysis fields (`hook_type`, `emotional_trigger`, `format`)
+
+Design rules:
+- neutral, informational tone
+- no aggressive CTA
+- avoids promo words (e.g. `best`, `amazing`, `buy now`, `limited time`)
+- targets ~60–80 words
+
+---
+
 ## Prerequisites
 
 - Python 3.10+
-- Windows PowerShell / Command Prompt (for `.bat` launcher)
-- Internet connection
-- OpenAI API key
+- Internet connection (for scraping + installing Playwright browser)
+- Windows CMD/PowerShell (for `.bat` launcher)
 
 ---
 
-## Setup
+## Installation
 
-1. Clone or download this project.
-2. Create and activate a virtual environment:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python -m playwright install chromium
+```
 
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   ```
-
-3. Install dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Install Playwright Chromium:
-
-   ```bash
-   python -m playwright install chromium
-   ```
-
-5. Configure environment variables:
-
-   ```bash
-   copy .env.example .env
-   ```
-
-   Open `.env` and set:
-
-   ```env
-   OPENAI_API_KEY=your_real_openai_key
-   ```
+> `requirements.txt` only includes local runtime dependency (`playwright`).
 
 ---
 
-## Run Manually
+## Run the Pipeline
 
-### Option A: Keyword passed in command line
+### Manual run (CLI)
 
 ```bash
 python main.py --keyword dating --limit 50
 ```
 
-### Option B: Prompt input
+### Manual run (prompt keyword)
 
 ```bash
 python main.py
 ```
 
-Then enter keyword when prompted.
-
 ---
 
-## One-Click Windows Launcher
+## One-Click Windows Run
 
-Double-click:
+Double-click `run_pipeline.bat`
 
-- `run_pipeline.bat`
-
-or from CMD:
+or run from CMD:
 
 ```bat
-run_pipeline.bat dating
+run_pipeline.bat dating 50
 ```
 
-The launcher will:
+- argument 1 = keyword (optional)
+- argument 2 = limit (optional, default `50`)
 
-- Create `.venv` if missing
-- Install/update dependencies
-- Install Playwright Chromium
-- Create `.env` from `.env.example` if needed
-- Ask for keyword if not provided
-- Run `main.py`
-
----
-
-## Pipeline Stages
-
-`main.py` executes in this order:
-
-1. **Scrape** (`scraper.py`) → `data/raw.json`
-2. **Clean** (`cleaner.py`) → `data/clean.json`
-3. **Analyze** (`analyzer.py`) → `data/analysis.json`
-4. **Generate RSOC** (`generator.py`) → `data/generated.json`
-5. **Export CSV** (`generator.py`) → `data/final.csv`
+The batch launcher will:
+- create `.venv` if missing
+- install dependencies
+- install Playwright Chromium
+- prompt for keyword if not provided
+- run full pipeline
 
 ---
 
 ## Output Files
 
-After a successful run, expect:
+After success:
 
-- `data/raw.json`: raw scraped records
-- `data/clean.json`: normalized + deduplicated records
-- `data/analysis.json`: ad + AI analysis fields
-- `data/generated.json`: ad + RSOC rewrite
-- `data/final.csv`: columns `original_text`, `rsoc_text`
+- `data/raw.json`
+- `data/clean.json`
+- `data/analysis.json`
+- `data/generated.json`
+- `data/final.csv` (columns: `original_text`, `rsoc_text`)
 
 ---
 
 ## Troubleshooting
 
-### 1) `OPENAI_API_KEY is missing`
-- Ensure `.env` exists and contains `OPENAI_API_KEY=...`
-- Confirm no surrounding quotes or trailing spaces
+### Playwright install fails
+```bash
+python -m playwright install chromium
+```
+Retry with stable network/proxy settings.
 
-### 2) Playwright browser errors
-- Re-run:
-  ```bash
-  python -m playwright install chromium
-  ```
-- Ensure antivirus/proxy is not blocking browser downloads
+### Scraper returns 0 ads
+- Meta DOM can change; selectors are defensive but may need updates.
+- Try another keyword.
+- Rerun later.
 
-### 3) Scraper returns few or zero ads
-- Meta Ad Library DOM can change often; selectors are defensive but may still break
-- Try another keyword and rerun
-- Increase runtime and retry later
-
-### 4) API rate or network errors
-- The pipeline logs and gracefully continues with fallback values where possible
-- Re-run when network/API is stable
+### Pipeline runs but outputs are sparse
+- Some ads contain limited text/media, reducing analysis richness.
+- Increase `--limit` and rerun.
 
 ---
 
 ## Notes
 
 - This project is for research/analysis workflows.
-- Respect Meta platform terms and applicable laws when scraping data.
+- Respect Meta platform terms and applicable laws.

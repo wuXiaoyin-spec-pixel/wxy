@@ -28,21 +28,17 @@ if errorlevel 1 (
     echo [WARN] Playwright browser install returned non-zero. Continuing...
 )
 
-if not exist ".env" (
-    if exist ".env.example" (
-        copy /Y ".env.example" ".env" >nul
-        echo [INFO] Created .env from .env.example. Please update OPENAI_API_KEY if not set.
-    )
-)
-
 set "KEYWORD=%~1"
 if "%KEYWORD%"=="" (
     set /p KEYWORD=Enter keyword for Ad Library search (default: dating): 
 )
 if "%KEYWORD%"=="" set "KEYWORD=dating"
 
-echo [INFO] Running pipeline with keyword: %KEYWORD%
-python main.py --keyword "%KEYWORD%" --limit 50
+set "LIMIT=%~2"
+if "%LIMIT%"=="" set "LIMIT=50"
+
+echo [INFO] Running pipeline with keyword: %KEYWORD% and limit: %LIMIT%
+python main.py --keyword "%KEYWORD%" --limit %LIMIT%
 set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE%==0 (

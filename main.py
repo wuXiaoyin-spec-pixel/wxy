@@ -52,7 +52,7 @@ def run_pipeline(keyword: str, limit: int) -> None:
     cleaned = clean_ads()
     print(f"Cleaning complete. Clean records: {len(cleaned)}")
 
-    print("[3/5] Analyzing ads with OpenAI...")
+    print("[3/5] Analyzing ads with local rules...")
     analyzed = analyze_ads()
     print(f"Analysis complete. Analyzed records: {len(analyzed)}")
 

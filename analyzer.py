@@ -1,74 +1,95 @@
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List
-
-from dotenv import load_dotenv
-from openai import OpenAI
+from typing import Dict, List, Tuple
 
 DATA_DIR = Path("data")
 CLEAN_PATH = DATA_DIR / "clean.json"
 ANALYSIS_PATH = DATA_DIR / "analysis.json"
 
+HOOK_RULES: List[Tuple[str, List[str]]] = [
+    ("curiosity", ["secret", "revealed", "mistake", "warning", "truth", "hidden"]),
+    ("value", ["save", "discount", "cheap", "affordable", "deal", "budget"]),
+    ("transformation", ["before and after", "before/after", "transform", "transformation", "results"]),
+    ("problem_solution", ["problem", "solution", "fix", "improve", "struggle"]),
+    ("social_proof", ["testimonial", "review", "thousands", "users", "trusted"]),
+]
+
+EMOTION_RULES: List[Tuple[str, List[str]]] = [
+    ("fear", ["fear", "risk", "danger", "urgent", "warning"]),
+    ("loneliness", ["lonely", "alone", "isolated", "single"]),
+    ("anxiety", ["anxious", "stress", "overwhelmed", "worried"]),
+    ("hope", ["hope", "better", "improve", "future", "grow"]),
+    ("confidence", ["confidence", "confident", "empower", "strong"]),
+]
+
 
 def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def analyze_single_ad(client: OpenAI, ad: Dict[str, str], model: str) -> Dict[str, str]:
-    text = ad.get("primary_text", "")
+def normalize(value: str) -> str:
+    return " ".join((value or "").lower().split())
+
+
+def contains_any(text: str, terms: List[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def infer_hook_type(text: str) -> str:
+    for label, keywords in HOOK_RULES:
+        if contains_any(text, keywords):
+            return label
+    return "informational"
+
+
+def infer_emotional_trigger(text: str) -> str:
+    for label, keywords in EMOTION_RULES:
+        if contains_any(text, keywords):
+            return label
+    return "neutral"
+
+
+def infer_format(primary_text: str, headline: str, image: str) -> str:
+    word_count = len(primary_text.split())
+    has_headline = bool(headline.strip())
+    has_image = bool(image.strip())
+
+    if has_image and has_headline and word_count >= 35:
+        return "image_headline_longcopy"
+    if has_image and has_headline:
+        return "image_headline_shortcopy"
+    if has_image and not has_headline:
+        return "image_text"
+    if not has_image and has_headline:
+        return "text_headline"
+    if word_count >= 45:
+        return "long_text"
+    return "text_only"
+
+
+def analyze_record(ad: Dict[str, str]) -> Dict[str, str]:
+    primary_text = ad.get("primary_text", "")
     headline = ad.get("headline", "")
+    image = ad.get("image", "")
 
-    prompt = f"""
-Analyze the ad copy below and return ONLY strict JSON with keys:
-- hook_type
-- emotional_trigger
-- format
-
-Ad primary text: {text}
-Ad headline: {headline}
-""".strip()
-
-    response = client.responses.create(
-        model=model,
-        input=prompt,
-        temperature=0,
-    )
-
-    output_text = response.output_text.strip()
-
-    try:
-        parsed = json.loads(output_text)
-    except json.JSONDecodeError:
-        parsed = {
-            "hook_type": "unknown",
-            "emotional_trigger": "unknown",
-            "format": "unknown",
-        }
+    combined = normalize(f"{primary_text} {headline}")
 
     return {
-        "hook_type": parsed.get("hook_type", "unknown"),
-        "emotional_trigger": parsed.get("emotional_trigger", "unknown"),
-        "format": parsed.get("format", "unknown"),
+        **ad,
+        "hook_type": infer_hook_type(combined),
+        "emotional_trigger": infer_emotional_trigger(combined),
+        "format": infer_format(primary_text, headline, image),
     }
 
 
-def analyze_ads(model: str = "gpt-4.1-mini") -> List[Dict[str, str]]:
+def analyze_ads() -> List[Dict[str, str]]:
     configure_logging()
     ensure_data_dir()
-    load_dotenv()
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your .env file.")
 
     if not CLEAN_PATH.exists():
         logging.warning("Clean file not found: %s. Writing empty analysis file.", CLEAN_PATH)
@@ -78,24 +99,19 @@ def analyze_ads(model: str = "gpt-4.1-mini") -> List[Dict[str, str]]:
     with CLEAN_PATH.open("r", encoding="utf-8") as f:
         clean_ads = json.load(f)
 
-    client = OpenAI(api_key=api_key)
-
     analyzed: List[Dict[str, str]] = []
+
     for idx, ad in enumerate(clean_ads, start=1):
         try:
-            analysis = analyze_single_ad(client=client, ad=ad, model=model)
+            record = analyze_record(ad)
         except Exception as exc:
-            logging.warning("Analysis failed for ad %s: %s", idx, exc)
-            analysis = {
-                "hook_type": "unknown",
-                "emotional_trigger": "unknown",
-                "format": "unknown",
+            logging.warning("Rule-based analysis failed for ad %s: %s", idx, exc)
+            record = {
+                **ad,
+                "hook_type": "informational",
+                "emotional_trigger": "neutral",
+                "format": "text_only",
             }
-
-        record = {
-            **ad,
-            **analysis,
-        }
         analyzed.append(record)
         logging.info("Analyzed ad %s/%s", idx, len(clean_ads))
 
