@@ -1,10 +1,7 @@
 import json
 from pathlib import Path
 
-DATA_DIR = Path("data")
-CLEAN_PATH = DATA_DIR / "clean.json"
-ANALYSIS_PATH = DATA_DIR / "analysis.json"
-
+DATA_ROOT = Path("data")
 
 HOOK_KEYWORDS = {
     "urgency": ["today", "now", "limited", "last chance", "ending", "deadline"],
@@ -22,12 +19,21 @@ EMOTION_KEYWORDS = {
 }
 
 
+
+def _paths(keyword):
+    safe_keyword = keyword.replace("/", "_").replace("\\", "_").strip() or "default"
+    keyword_dir = DATA_ROOT / safe_keyword
+    return keyword_dir / "clean.json", keyword_dir / "analysis.json"
+
+
+
 def _pick_label(text, mapping, default_label="neutral"):
     lower_text = text.lower()
     for label, words in mapping.items():
         if any(word in lower_text for word in words):
             return label
     return default_label
+
 
 
 def _infer_format(ad):
@@ -44,16 +50,18 @@ def _infer_format(ad):
     return "long_copy"
 
 
-def analyze_ads():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not CLEAN_PATH.exists():
-        print(f"[analyzer] Missing input file: {CLEAN_PATH}")
-        with ANALYSIS_PATH.open("w", encoding="utf-8") as f:
+def analyze_ads(keyword):
+    clean_path, analysis_path = _paths(keyword)
+    analysis_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not clean_path.exists():
+        print(f"[analyzer] Missing input file: {clean_path}")
+        with analysis_path.open("w", encoding="utf-8") as f:
             json.dump([], f, ensure_ascii=False, indent=2)
         return []
 
-    with CLEAN_PATH.open("r", encoding="utf-8") as f:
+    with clean_path.open("r", encoding="utf-8") as f:
         ads = json.load(f)
 
     analyzed = []
@@ -69,12 +77,12 @@ def analyze_ads():
         enriched["format"] = ad_format
         analyzed.append(enriched)
 
-    with ANALYSIS_PATH.open("w", encoding="utf-8") as f:
+    with analysis_path.open("w", encoding="utf-8") as f:
         json.dump(analyzed, f, ensure_ascii=False, indent=2)
 
-    print(f"[analyzer] Saved {len(analyzed)} analyzed ads to {ANALYSIS_PATH}")
+    print(f"[analyzer] Saved {len(analyzed)} analyzed ads to {analysis_path}")
     return analyzed
 
 
 if __name__ == "__main__":
-    analyze_ads()
+    analyze_ads("dating")
