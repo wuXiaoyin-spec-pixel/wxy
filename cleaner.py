@@ -1,70 +1,56 @@
 import json
-import logging
 from pathlib import Path
-from typing import Dict, List
 
 DATA_DIR = Path("data")
 RAW_PATH = DATA_DIR / "raw.json"
 CLEAN_PATH = DATA_DIR / "clean.json"
 
 
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+def _norm_text(value):
+    if value is None:
+        return ""
+    return " ".join(str(value).split()).strip()
 
 
-def ensure_data_dir() -> None:
+def _is_valid(record):
+    if not isinstance(record, dict):
+        return False
+    if not record.get("primary_text") and not record.get("headline"):
+        return False
+    return True
+
+
+def clean_ads():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def normalize_text(value: str) -> str:
-    if not value:
-        return ""
-    return " ".join(str(value).strip().split())
-
-
-def clean_ads() -> List[Dict[str, str]]:
-    configure_logging()
-    ensure_data_dir()
-
     if not RAW_PATH.exists():
-        logging.warning("Raw file not found: %s. Creating empty clean file.", RAW_PATH)
-        CLEAN_PATH.write_text("[]", encoding="utf-8")
+        print(f"[cleaner] Missing input file: {RAW_PATH}")
+        with CLEAN_PATH.open("w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
         return []
 
     with RAW_PATH.open("r", encoding="utf-8") as f:
-        raw_data = json.load(f)
+        raw_ads = json.load(f)
 
     cleaned = []
-    seen = set()
-
-    for item in raw_data:
-        primary_text = normalize_text(item.get("primary_text", ""))
-        headline = normalize_text(item.get("headline", ""))
-        image = normalize_text(item.get("image", ""))
-
-        if not any([primary_text, headline, image]):
-            continue
-
-        record = {
-            "primary_text": primary_text,
-            "headline": headline,
-            "image": image,
+    for item in raw_ads:
+        normalized = {
+            "page_name": _norm_text(item.get("page_name", "")),
+            "primary_text": _norm_text(item.get("primary_text", "")),
+            "headline": _norm_text(item.get("headline", "")),
+            "image": _norm_text(item.get("image", "")),
+            "ad_snapshot_url": _norm_text(item.get("ad_snapshot_url", "")),
         }
 
-        dedupe_key = (primary_text.lower(), headline.lower(), image)
-        if dedupe_key in seen:
-            continue
+        normalized["original_text"] = normalized["primary_text"]
 
-        seen.add(dedupe_key)
-        cleaned.append(record)
+        if _is_valid(normalized):
+            cleaned.append(normalized)
 
     with CLEAN_PATH.open("w", encoding="utf-8") as f:
         json.dump(cleaned, f, ensure_ascii=False, indent=2)
 
-    logging.info("Saved %s cleaned ads to %s", len(cleaned), CLEAN_PATH)
+    print(f"[cleaner] Saved {len(cleaned)} cleaned ads to {CLEAN_PATH}")
     return cleaned
 
 
