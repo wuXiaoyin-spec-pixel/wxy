@@ -1,78 +1,55 @@
 import argparse
-import logging
+import sys
 
 from analyzer import analyze_ads
 from cleaner import clean_ads
-from generator import generate_ads
+from generator import generate_outputs
 from scraper import scrape_ads
 
 
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-
-
-def parse_args() -> argparse.Namespace:
+def build_parser():
     parser = argparse.ArgumentParser(
-        description="Facebook Ad Library pipeline: scrape -> clean -> analyze -> generate -> export"
+        description="Local Facebook Ad Library pipeline: scrape -> clean -> analyze -> generate -> export"
     )
-    parser.add_argument(
-        "--keyword",
-        type=str,
-        default="",
-        help="Keyword to search in Meta Ad Library (e.g. dating)",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=50,
-        help="Maximum number of ads to collect",
-    )
-    return parser.parse_args()
+    parser.add_argument("--keyword", type=str, required=True, help="Search keyword")
+    parser.add_argument("--limit", type=int, default=20, help="Number of ads to collect")
+    return parser
 
 
-def prompt_keyword_if_missing(keyword: str) -> str:
-    if keyword.strip():
-        return keyword.strip()
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
 
-    value = input("Enter keyword for Ad Library search (default: dating): ").strip()
-    return value or "dating"
+    keyword = args.keyword.strip()
+    limit = max(1, args.limit)
 
+    print("[main] Step 1/5: Scraping ads...")
+    ads = scrape_ads(keyword=keyword, limit=limit)
+    if not ads:
+        print("[main] Scraping returned zero ads. Pipeline stopped.")
+        return 1
 
-def run_pipeline(keyword: str, limit: int) -> None:
-    print("\n=== Facebook Ad Library Pipeline Started ===")
-
-    print("[1/5] Scraping ads...")
-    scraped = scrape_ads(keyword=keyword, limit=limit)
-    print(f"Scraping complete. Ads collected: {len(scraped)}")
-
-    print("[2/5] Cleaning data...")
+    print("[main] Step 2/5: Cleaning ads...")
     cleaned = clean_ads()
-    print(f"Cleaning complete. Clean records: {len(cleaned)}")
+    if not cleaned:
+        print("[main] Cleaning returned zero valid ads. Pipeline stopped.")
+        return 1
 
-    print("[3/5] Analyzing ads with local rules...")
+    print("[main] Step 3/5: Analyzing ads...")
     analyzed = analyze_ads()
-    print(f"Analysis complete. Analyzed records: {len(analyzed)}")
+    if not analyzed:
+        print("[main] Analysis returned zero rows. Pipeline stopped.")
+        return 1
 
-    print("[4/5] Generating RSOC ad text...")
-    generated = generate_ads()
-    print(f"Generation complete. Generated records: {len(generated)}")
+    print("[main] Step 4/5 and 5/5: Generating text and exporting CSV...")
+    generated = generate_outputs()
+    if not generated:
+        print("[main] Generation returned zero rows. Pipeline stopped.")
+        return 1
 
-    print("[5/5] Exporting CSV...")
-    # CSV export happens in generate_ads() by design.
-    print("CSV export complete. Output: data/final.csv")
-
-    print("=== Pipeline Finished Successfully ===\n")
-
-
-def main() -> None:
-    configure_logging()
-    args = parse_args()
-    keyword = prompt_keyword_if_missing(args.keyword)
-    run_pipeline(keyword=keyword, limit=args.limit)
+    print("[main] Pipeline completed successfully.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

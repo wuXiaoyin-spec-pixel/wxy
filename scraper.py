@@ -1,213 +1,211 @@
-import argparse
 import json
-import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from urllib.parse import quote_plus
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+DEBUG_BROWSER = False
 DATA_DIR = Path("data")
 RAW_PATH = DATA_DIR / "raw.json"
-META_AD_LIBRARY_URL = "https://www.facebook.com/ads/library/"
+
+CARD_SELECTORS = [
+    "div[role='article']",
+    "div.x1n2onr6",
+    "div[data-testid='ad-library-ad']",
+]
+
+PAGE_NAME_SELECTORS = [
+    "h4",
+    "a[role='link'] span",
+    "div[dir='auto'] strong",
+]
+
+PRIMARY_TEXT_SELECTORS = [
+    "div[dir='auto']",
+    "div.xdj266r",
+    "span[dir='auto']",
+]
+
+HEADLINE_SELECTORS = [
+    "h2",
+    "h3",
+    "strong",
+    "div[role='heading']",
+]
+
+IMAGE_SELECTORS = [
+    "img",
+]
+
+SNAPSHOT_LINK_SELECTORS = [
+    "a[href*='ad_snapshot']",
+    "a[href*='/ads/library/']",
+]
 
 
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-
-
-def ensure_data_dir() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def safe_text(element, selector: str) -> str:
-    try:
-        target = element.query_selector(selector)
-        if not target:
-            return ""
-        value = target.inner_text(timeout=1500).strip()
-        return value
-    except Exception:
-        return ""
-
-
-def safe_image(element) -> str:
-    image_selectors = ["img[src]", "image"]
-    for selector in image_selectors:
+def _safe_text(card, selectors):
+    for selector in selectors:
         try:
-            target = element.query_selector(selector)
-            if not target:
-                continue
-            src = target.get_attribute("src") or ""
-            if src:
-                return src
+            node = card.query_selector(selector)
+            if node:
+                text = (node.inner_text() or "").strip()
+                if text:
+                    return text
         except Exception:
             continue
     return ""
 
 
-def extract_ad(entry) -> Optional[Dict[str, str]]:
-    primary_candidates = [
-        "div[dir='auto']",
-        "span[dir='auto']",
-        "div[style*='white-space']",
-    ]
-    headline_candidates = [
-        "h3",
-        "h4",
-        "strong",
-    ]
-
-    primary_text = ""
-    for selector in primary_candidates:
-        primary_text = safe_text(entry, selector)
-        if primary_text:
-            break
-
-    headline = ""
-    for selector in headline_candidates:
-        headline = safe_text(entry, selector)
-        if headline and headline != primary_text:
-            break
-
-    image = safe_image(entry)
-
-    if not any([primary_text, headline, image]):
-        return None
-
-    return {
-        "primary_text": primary_text,
-        "headline": headline,
-        "image": image,
-    }
+def _safe_attr(card, selectors, attr):
+    for selector in selectors:
+        try:
+            node = card.query_selector(selector)
+            if node:
+                value = (node.get_attribute(attr) or "").strip()
+                if value:
+                    return value
+        except Exception:
+            continue
+    return ""
 
 
-def build_search_url(keyword: str) -> str:
-    # country=ALL and media_type=all keeps coverage broad
+def _extract_snapshot_url(card):
+    for selector in SNAPSHOT_LINK_SELECTORS:
+        try:
+            links = card.query_selector_all(selector)
+            for link in links:
+                href = (link.get_attribute("href") or "").strip()
+                if not href:
+                    continue
+                if href.startswith("/"):
+                    href = "https://www.facebook.com" + href
+                return href
+        except Exception:
+            continue
+    return ""
+
+
+def _dedup_key(ad):
     return (
-        f"{META_AD_LIBRARY_URL}?active_status=all&ad_type=all&country=ALL"
-        f"&q={keyword}&search_type=keyword_unordered"
+        ad.get("page_name", "").lower().strip(),
+        ad.get("primary_text", "").lower().strip(),
+        ad.get("headline", "").lower().strip(),
+        ad.get("ad_snapshot_url", "").lower().strip(),
     )
 
 
-def scrape_ads(keyword: str, limit: int = 50, retries: int = 3) -> List[Dict[str, str]]:
-    configure_logging()
-    ensure_data_dir()
+def scrape_ads(keyword, limit=20):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    for attempt in range(1, retries + 1):
-        logging.info("Scrape attempt %s/%s for keyword='%s'", attempt, retries, keyword)
-        ads: List[Dict[str, str]] = []
+    encoded_keyword = quote_plus(keyword.strip())
+    url = (
+        "https://www.facebook.com/ads/library/?active_status=all"
+        "&ad_type=all&country=US&is_targeted_country=false"
+        f"&media_type=all&search_type=keyword_unordered&q={encoded_keyword}"
+    )
+
+    unique_ads = []
+    seen = set()
+
+    print(f"[scraper] Opening: {url}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=not DEBUG_BROWSER,
+            slow_mo=400 if DEBUG_BROWSER else 0,
+        )
+        context = browser.new_context()
+        page = context.new_page()
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context(
-                    viewport={"width": 1366, "height": 768},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/121.0.0.0 Safari/537.36"
-                    ),
-                )
-                page = context.new_page()
-                page.set_default_timeout(15000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
+        except PlaywrightTimeoutError:
+            print("[scraper] Initial page load timed out.")
 
-                url = build_search_url(keyword)
-                logging.info("Opening %s", url)
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        stale_height_rounds = 0
+        stale_count_rounds = 0
+        last_height = 0
+        last_count = 0
 
-                # Give page and dynamic scripts time to render ad cards.
-                page.wait_for_timeout(3000)
+        for round_number in range(1, 60):
+            cards = []
+            for selector in CARD_SELECTORS:
+                try:
+                    found = page.query_selector_all(selector)
+                    if found:
+                        cards = found
+                        break
+                except Exception:
+                    continue
 
-                prev_count = 0
-                stagnation_rounds = 0
+            print(f"[scraper] Round {round_number}: cards found={len(cards)}")
 
-                while len(ads) < limit and stagnation_rounds < 5:
-                    page.mouse.wheel(0, 3000)
-                    page.wait_for_timeout(2000)
+            for card in cards:
+                ad = {
+                    "page_name": _safe_text(card, PAGE_NAME_SELECTORS),
+                    "primary_text": _safe_text(card, PRIMARY_TEXT_SELECTORS),
+                    "headline": _safe_text(card, HEADLINE_SELECTORS),
+                    "image": _safe_attr(card, IMAGE_SELECTORS, "src"),
+                    "ad_snapshot_url": _extract_snapshot_url(card),
+                }
 
-                    card_selectors = [
-                        "div[role='article']",
-                        "div.x1n2onr6",
-                        "div:has-text('Sponsored')",
-                    ]
+                if not ad["primary_text"] and not ad["headline"]:
+                    continue
 
-                    cards = []
-                    for selector in card_selectors:
-                        cards = page.query_selector_all(selector)
-                        if cards:
-                            break
+                key = _dedup_key(ad)
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_ads.append(ad)
 
-                    for card in cards:
-                        if len(ads) >= limit:
-                            break
-                        parsed = extract_ad(card)
-                        if parsed:
-                            ads.append(parsed)
+                if len(unique_ads) >= limit:
+                    break
 
-                    # Deduplicate while preserving order
-                    unique_ads = []
-                    seen = set()
-                    for ad in ads:
-                        key = (
-                            ad.get("primary_text", "").strip(),
-                            ad.get("headline", "").strip(),
-                            ad.get("image", "").strip(),
-                        )
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        unique_ads.append(ad)
-                    ads = unique_ads
+            current_height = page.evaluate("document.body.scrollHeight")
+            print(
+                f"[scraper] unique ads={len(unique_ads)} | page height={current_height}"
+            )
 
-                    if len(ads) == prev_count:
-                        stagnation_rounds += 1
-                    else:
-                        stagnation_rounds = 0
-                    prev_count = len(ads)
+            if len(unique_ads) >= limit:
+                print("[scraper] Reached requested limit.")
+                break
 
-                    logging.info("Collected %s/%s ads", len(ads), limit)
+            if current_height == last_height:
+                stale_height_rounds += 1
+            else:
+                stale_height_rounds = 0
 
-                browser.close()
+            if len(unique_ads) == last_count:
+                stale_count_rounds += 1
+            else:
+                stale_count_rounds = 0
 
-                if ads:
-                    with RAW_PATH.open("w", encoding="utf-8") as f:
-                        json.dump(ads[:limit], f, ensure_ascii=False, indent=2)
-                    logging.info("Saved %s ads to %s", len(ads[:limit]), RAW_PATH)
-                    return ads[:limit]
+            if stale_height_rounds >= 4:
+                print("[scraper] Stopping: page height stopped changing.")
+                break
 
-                logging.warning("No ads collected in attempt %s", attempt)
+            if stale_count_rounds >= 5:
+                print("[scraper] Stopping: unique ad count stopped growing.")
+                break
 
-        except PlaywrightTimeoutError as exc:
-            logging.warning("Timeout during scrape attempt %s: %s", attempt, exc)
-        except Exception as exc:
-            logging.exception("Unexpected error during scrape attempt %s: %s", attempt, exc)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2500)
 
-        backoff_seconds = attempt * 2
-        logging.info("Retrying in %s seconds...", backoff_seconds)
-        time.sleep(backoff_seconds)
+            last_height = current_height
+            last_count = len(unique_ads)
 
-    logging.error("Scraping failed after %s attempts", retries)
+        context.close()
+        browser.close()
+
     with RAW_PATH.open("w", encoding="utf-8") as f:
-        json.dump([], f, ensure_ascii=False, indent=2)
-    return []
+        json.dump(unique_ads[:limit], f, ensure_ascii=False, indent=2)
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scrape Facebook Ad Library ads")
-    parser.add_argument("--keyword", type=str, default="dating", help="Search keyword")
-    parser.add_argument("--limit", type=int, default=50, help="Maximum ads to collect")
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    scrape_ads(keyword=args.keyword, limit=args.limit)
+    print(f"[scraper] Saved {len(unique_ads[:limit])} ads to {RAW_PATH}")
+    return unique_ads[:limit]
 
 
 if __name__ == "__main__":
-    main()
+    scrape_ads("dating", 20)
